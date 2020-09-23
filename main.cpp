@@ -19,42 +19,51 @@ int initNetworkListener(int selectedDevNum);
 int run_sniffer(pcap_t *handle);
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
 int initSQLite(string s);
-static int sqlitecb_expose(void *NotUsed, int argc, char **argv, char **azColName);
-static int sqlite_clearcb();
+int sqlitecb_expose(void *NotUsed, int argc, char **argv, char **azColName);
+int sqlite_clearcb();
 string seconds_to_datetime(struct tm * ptm);
+int change_timezone(struct tm * ptm, int utc_offset);
+int sqlite_insert(string table, int datasize, int direction);
 
 
 /* --- GLOBAL VARIABLES --- */
-const string TABLE_NAME = "BW_MONITOR";
-static int sqlite_argc;
-static char **sqlite_argv, **sqlite_azColName;
+string TABLE_NAME = "BW_MONITOR";
+int sqlite_argc, sqlite_rc;
+char **sqlite_argv, **sqlite_azColName, *sqlite_err;
+sqlite3 *db;
 
 /* --- GLOBAL FUNCTIONS --- */
 int main(int argc, char *argv[])
 {
-	int devNum = -1;
+	int rv, devNum = -1;
 	
 	if(argc == 2) {
 		devNum = argv[0][0]-46;
 	}
 
-	initSQLite("bwmonitor.db");
-	initNetworkListener(devNum);
+	rv = initSQLite("bwmonitor.db");
+	if(rv != 0)
+		return 1;
+
+	rv = initNetworkListener(devNum);
+	if(rv != 0)
+		return 1;
+
+	if(db != NULL)
+		sqlite3_close(db);
 
 	return(0);
 }
 
 int initSQLite(string s) {
-	sqlite3 *db;
 	char *zErrMsg = 0;
-	int rc;
 	string sql;
 
-	rc = sqlite3_open(s.c_str(), &db);
+	sqlite_rc = sqlite3_open(s.c_str(), &db);
 
-	if( rc ) {
+	if( sqlite_rc ) {
 		fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(db));
-		return(0);
+		return 1;
 	} else {
 		fprintf(stderr, "Opened database successfully\n");
 	}
@@ -62,34 +71,54 @@ int initSQLite(string s) {
 	/* CHECK IF TABLE EXISTS */
 	sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='" + TABLE_NAME + "';";
 	sqlite_clearcb();
-	rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &zErrMsg);
-	cout << "size: " << sqlite_argc << endl;
+	sqlite_rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &zErrMsg);
 
 	/* CREATE TABLE */
-	if(rc == 0) { 
+	if(sqlite_argc == 0) { 
 		sql = "CREATE TABLE " + TABLE_NAME + "("  \
-			"ID INT PRIMARY KEY     NOT NULL," \
-			"LENGTH            INT     NOT NULL," \
-			"TIME_STAMP        CHAR(50));";
+			"DATA_SIZE            INTEGER     NOT NULL," \
+			"DIRECTION            INTEGER     NOT NULL," \
+			"TIME_STAMP        INTEGER);";
 
 		/* Clear Output & Execute SQL statement */
 		sqlite_clearcb();
-		rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &zErrMsg);
+		sqlite_rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &zErrMsg);
 		
-		if( rc != SQLITE_OK ){
-			fprintf(stderr, "SQL error: %s\n", zErrMsg);
+		if( sqlite_rc != SQLITE_OK ){
+			fprintf(stderr, "Can't create table. SQL error: %s\n", zErrMsg);
 			sqlite3_free(zErrMsg);
+			return 2;
 		} else {
-			fprintf(stdout, "Table '%s' created successfully\n", TABLE_NAME);
+			cout << "Table " + TABLE_NAME + " created successfully" << endl;
 		}
 	}
-
-	sqlite3_close(db);
 	
 	return 0;
 }
 
-static int sqlite_clearcb() {
+int sqlite_insert(string table, int datasize, int direction) {
+	char *zErrMsg = 0;
+
+	//STORE DATA IN SQL DB
+	string sql = "INSERT INTO " + table + " (DATA_SIZE, DIRECTION, TIME_STAMP) " \
+	"VALUES(" + to_string(datasize) + ", " + to_string(direction) + ", datetime('now'));";
+	sqlite_clearcb();
+	int sqlite_rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &sqlite_err);
+
+	if( sqlite_rc != SQLITE_OK ){
+		fprintf(stderr, "SQL error: %s", zErrMsg);
+		cout << " | QUERY: " << sql << endl;
+		sqlite3_free(zErrMsg);
+		return 1;
+	} else {
+		cout << "Insertion successfully" << endl;
+		return 0;
+	}
+}
+
+
+
+int sqlite_clearcb() {
 	sqlite_argc = 0;
 	sqlite_argv = NULL;
 	sqlite_azColName = NULL;
@@ -97,7 +126,7 @@ static int sqlite_clearcb() {
 	return 0;
 }
 
-static int sqlitecb_expose(void *NotUsed, int argc, char **argv, char **azColName) {
+int sqlitecb_expose(void *NotUsed, int argc, char **argv, char **azColName) {
 
 	sqlite_argc = argc;
 	sqlite_argv = argv;
@@ -196,59 +225,75 @@ int run_sniffer(pcap_t* handle) {
 }
 
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
-	cout << "Jacked packet | ";
+	char *zErrMsg = 0;
 	time_t rawtime = time(NULL);
 
-	string datetime = seconds_to_datetime(gmtime(&rawtime));
+	struct tm * ptm = gmtime(&rawtime);
+	change_timezone(ptm, CDT);
+	string datetime = seconds_to_datetime(ptm);
 
-	cout << "size is " << header->len << "bytes | time is " 
-		<< datetime << "" << endl;
+	cout << "Jacked packet | size is " << header->len << "bytes | datetime is (" 
+		<< datetime << ") ";
+
+
+	sqlite_insert(TABLE_NAME, header->len, 0);
 }
 
 /**
-  *	Convert time in seconds to string datetime
+  *	Change timezone using utc_offset. parameter is manipulated and
+  *	the change is made to the pointer.
+  *
+  * @param (struct tm)ptm 	in assumed to be in utc time. Will be
+  *							different upon completion of fnct
+  */
+int change_timezone(struct tm * ptm, int utc_offset) {
+	ptm->tm_year = ptm->tm_year;
+	ptm->tm_mon = ptm->tm_mon;
+	ptm->tm_mday;
+	ptm->tm_hour = ptm->tm_hour+utc_offset;
+
+	/* hour overflow | correct day */
+	if(ptm->tm_hour < 0) {
+		ptm->tm_hour += 24;
+		ptm->tm_mday -= 1;
+	}
+
+	/* day overflow | correct month */
+	if(ptm->tm_mday < 0) {
+		ptm->tm_mday += 31;
+		ptm->tm_mon -= 1;
+		/* Correct days 31/30/28/29 */
+		if(ptm->tm_mon == 3 || ptm->tm_mon == 5 || ptm->tm_mon == 8 || ptm->tm_mon == 10)
+			ptm->tm_mday -= 1; // For months w/ 30 days
+		if(ptm->tm_mon == 2) {
+			if(ptm->tm_year%4 == 0) // for feb leap year
+				ptm->tm_mday -= 2;
+			else
+				ptm->tm_mday -= 3; // for feb non leap year
+		}
+	}
+	
+	/* month overflow | correct year */
+	if(ptm->tm_mon < 0) {
+		ptm->tm_mon += 12;
+		ptm->tm_year -= 1;
+	}
+
+	return 0;
+}
+
+/**
+  *	Convert struct tm to string datetime
   *	datetime format is YYYY-MM-DD HH:MM:SS
   *
   * @param (struct tm)ptm
   * @return (string)datetime
   */
 string seconds_to_datetime(struct tm * ptm) {
-	int inttm_y = (ptm->tm_year+1900);
-	int inttm_mo = (ptm->tm_mon+1);
-	int inttm_d = (ptm->tm_mday);
-	int inttm_h = (ptm->tm_hour+CDT);
-
-	/* hour overflow | correct day */
-	if(inttm_h < 0) {
-		inttm_h += 24;
-		inttm_d -= 1;
-	}
-
-	/* day overflow | correct month */
-	if(inttm_d < 0) {
-		inttm_d += 31;
-		inttm_mo -= 1;
-		/* Correct days 31/30/28/29 */
-		if(inttm_mo == 4 || inttm_mo == 6 || inttm_mo == 9 || inttm_mo == 11)
-			inttm_d -= 1; // For months w/ 30 days
-		if(inttm_mo == 2) {
-			if(inttm_y%4 == 0) // for feb leap year
-				inttm_d -= 2;
-			else
-				inttm_d -= 3; // for feb non leap year
-		}
-	}
-
-	/* month overflow | correct year */
-	if(inttm_mo < 0) {
-		inttm_mo += 12;
-		inttm_y -= 1;
-	}
-
-	string strtm_y = to_string(inttm_y);
-	string strtm_mo = to_string(inttm_mo);
-	string strtm_d = to_string(inttm_d);
-	string strtm_h = to_string(inttm_h);
+	string strtm_y = to_string(ptm->tm_year+1900);
+	string strtm_mo = to_string(ptm->tm_mon+1);
+	string strtm_d = to_string(ptm->tm_mday);
+	string strtm_h = to_string(ptm->tm_hour);
 	string strtm_mn = to_string(ptm->tm_min);
 	string strtm_s = to_string(ptm->tm_sec);
 
