@@ -1,6 +1,7 @@
 # Prerequisites
 *.d
 *.db
+*.db-journal
 
 # Compiled Object files
 *.slo
