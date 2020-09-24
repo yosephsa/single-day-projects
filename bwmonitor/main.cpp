@@ -5,7 +5,7 @@
 #include <sqlite3.h>
 #include <time.h>  
 #include <vector> 
-#include<cmath>
+#include <cmath>
 
 /* GLOBAL DEFINITIONS */
 #define MST (-7)
@@ -249,8 +249,8 @@ int send_report() {
 		} else {
 			time_t rawtime = time(NULL);
 			struct tm * ptm = gmtime(&rawtime);
-			time_correct(ptm, 0);
 			ptm->tm_mday -= i;
+			time_correct(ptm, 0);
 			string day = zellersAlgorithm(ptm->tm_mday, ptm->tm_mon+1, ptm->tm_year+1900);
 
 			cout << day << ": " ;
