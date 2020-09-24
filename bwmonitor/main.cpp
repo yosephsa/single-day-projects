@@ -4,6 +4,8 @@
 #include <pcap.h>
 #include <sqlite3.h>
 #include <time.h>  
+#include <vector> 
+#include<cmath>
 
 /* GLOBAL DEFINITIONS */
 #define MST (-7)
@@ -20,16 +22,18 @@ int run_sniffer(pcap_t *handle);
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet);
 int initSQLite(string s);
 int sqlitecb_expose(void *NotUsed, int argc, char **argv, char **azColName);
-int sqlite_clearcb();
 string seconds_to_datetime(struct tm * ptm);
-int change_timezone(struct tm * ptm, int utc_offset);
+int time_correct(struct tm * ptm, int utc_offset);
 int sqlite_insert(string table, int datasize, int direction);
-
+int send_report();
+string zellersAlgorithm(int day, int month, int year);
 
 /* --- GLOBAL VARIABLES --- */
 string TABLE_NAME = "BW_MONITOR";
-int sqlite_argc, sqlite_rc;
-char **sqlite_argv, **sqlite_azColName, *sqlite_err;
+int sqlite_argc, sqlite_rc, pktlen_sum;
+char *sqlite_err;
+vector<string> sqlite_azColName;
+vector<string> sqlite_argv;
 sqlite3 *db;
 
 /* --- GLOBAL FUNCTIONS --- */
@@ -45,9 +49,14 @@ int main(int argc, char *argv[])
 	if(rv != 0)
 		return 1;
 
+	send_report();
 	rv = initNetworkListener(devNum);
 	if(rv != 0)
 		return 1;
+
+	while(1) {
+
+	}
 
 	if(db != NULL)
 		sqlite3_close(db);
@@ -63,26 +72,22 @@ int run_sniffer(pcap_t* handle) {
 	struct pcap_pkthdr header;	/* The header that pcap gives us */
 
 	while(1) {
-		cout << "." << endl;
+		cout << endl;
 		/* Loop packets */
-		pcap_loop(handle, 10, got_packet, NULL);
+		pktlen_sum = 0;
+		pcap_loop(handle, 20000, got_packet, NULL);
+
+		//Store
+		sqlite_insert(TABLE_NAME, pktlen_sum, 0);
+
+		//Output for debugging
+		cout << "Jacked packets | size is " << pktlen_sum << " bytes." << endl;
 	}
 	return 0;
 }
 
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
-	char *zErrMsg = 0;
-	time_t rawtime = time(NULL);
-
-	struct tm * ptm = gmtime(&rawtime);
-	change_timezone(ptm, CDT);
-	string datetime = seconds_to_datetime(ptm);
-
-	cout << "Jacked packet | size is " << header->len << "bytes | datetime is (" 
-		<< datetime << ") ";
-
-
-	sqlite_insert(TABLE_NAME, header->len, 0);
+	pktlen_sum += header->len;
 }
 
 /*********************************************************************************/
@@ -130,7 +135,6 @@ int initNetworkListener(int selectedDevNum) {
 		}
 
 	}
-	cout << "Selected device is " << selectedDev->name << endl;
 	
 	//Open selected network device
 	pcap_t *handle;
@@ -139,7 +143,7 @@ int initNetworkListener(int selectedDevNum) {
 		fprintf(stderr, "Couldn't open device %s: %s\n", selectedDev, errbuf);
 		return(1);
 	}
-	cout << selectedDev->name << " opened" << endl;
+	cout << "Opened device " << selectedDev->name << endl;
 
 
 	/* === SNIFF ON DEVICE === */
@@ -191,7 +195,6 @@ int initSQLite(string s) {
 
 	/* CHECK IF TABLE EXISTS */
 	sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='" + TABLE_NAME + "';";
-	sqlite_clearcb();
 	sqlite_rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &zErrMsg);
 
 	/* CREATE TABLE */
@@ -202,7 +205,6 @@ int initSQLite(string s) {
 			"TIME_STAMP        INTEGER);";
 
 		/* Clear Output & Execute SQL statement */
-		sqlite_clearcb();
 		sqlite_rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &zErrMsg);
 		
 		if( sqlite_rc != SQLITE_OK ){
@@ -221,6 +223,54 @@ int initSQLite(string s) {
 /* ****************************  UTIL FUNCTIONS    ***************************** */
 /*********************************************************************************/
 
+int send_report() {
+	int data_used[7];
+	string du_sql[7];
+
+	for(int i = 0; i < 7; i++) {
+		//Initialize data_used
+		data_used[i] = 0;
+
+		//Create sql query
+		if(i == 0)
+			du_sql[i] = "SELECT SUM(DATA_SIZE) FROM " + TABLE_NAME + " WHERE TIME_STAMP > datetime('now', '-1 days'); ";
+		else
+			du_sql[i] = "SELECT SUM(DATA_SIZE) FROM " + TABLE_NAME + " WHERE TIME_STAMP < datetime('now', '-" + to_string(i) + " days') " \
+												" AND TIME_STAMP > datetime('now', '-" + to_string(i+1) + " days'); ";
+		
+		//Submit sql query
+		sqlite_rc = sqlite3_exec(db, du_sql[i].c_str(), sqlitecb_expose, 0, &sqlite_err);
+		
+		if( sqlite_rc != SQLITE_OK ){
+			fprintf(stderr, "SQL error: %s", sqlite_err);
+			cout << " | QUERY: " << du_sql[i] << endl;
+			sqlite3_free(sqlite_err);
+			data_used[i] = -1;
+		} else {
+			time_t rawtime = time(NULL);
+			struct tm * ptm = gmtime(&rawtime);
+			time_correct(ptm, 0);
+			ptm->tm_mday -= i;
+			string day = zellersAlgorithm(ptm->tm_mday, ptm->tm_mon+1, ptm->tm_year+1900);
+
+			cout << day << ": " ;
+			if(sqlite_argc > 0) {
+				cout << "Data used is " << sqlite_argv.at(0) << "bytes";
+			} else
+				cout << "No data";
+			cout << endl;
+
+		}
+	}
+	
+	// Submit SQL requests and store data
+	for(int i = 0; i < 7;  i++) {
+		
+	}
+
+	return 0;
+	
+}
 
 int sqlite_insert(string table, int datasize, int direction) {
 	char *zErrMsg = 0;
@@ -228,8 +278,7 @@ int sqlite_insert(string table, int datasize, int direction) {
 	//STORE DATA IN SQL DB
 	string sql = "INSERT INTO " + table + " (DATA_SIZE, DIRECTION, TIME_STAMP) " \
 	"VALUES(" + to_string(datasize) + ", " + to_string(direction) + ", datetime('now'));";
-	sqlite_clearcb();
-	int sqlite_rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &sqlite_err);
+	sqlite_rc = sqlite3_exec(db, sql.c_str(), sqlitecb_expose, 0, &sqlite_err);
 
 	if( sqlite_rc != SQLITE_OK ){
 		fprintf(stderr, "SQL error: %s", zErrMsg);
@@ -244,36 +293,37 @@ int sqlite_insert(string table, int datasize, int direction) {
 
 int sqlitecb_expose(void *NotUsed, int argc, char **argv, char **azColName) {
 
+	//Erase values from global vars
 	sqlite_argc = argc;
-	sqlite_argv = argv;
-	sqlite_azColName = azColName;
+	sqlite_argv.clear();
+	sqlite_azColName.clear();
 
+	//Store values in global vars
 	for(int i = 0; i<argc; i++) {
-		cout << azColName[i] << " = " << argv[i] << endl;
+		try { /* Test if arg*/ 
+			string val(argv[i]);
+			sqlite_argv.push_back(val);
+			
+			string col(azColName[i]);
+			sqlite_azColName.push_back(col);
+
+		} catch (...) { 
+			sqlite_argc = i; // Set the num of arguments to number of successful loops (i.e. index)
+			continue;
+		}
 	}
 	return 0;
 }
 
 /**
-  * reset sqlite callback function exposed variables to their defaults.
-  *
-  */
-int sqlite_clearcb() {
-	sqlite_argc = 0;
-	sqlite_argv = NULL;
-	sqlite_azColName = NULL;
-
-	return 0;
-}
-
-/**
   *	Change timezone using utc_offset. parameter is manipulated and
-  *	the change is made to the pointer.
+  *	the change is made to the pointer. And correct under and over flow
+  * of datetime
   *
   * @param (struct tm)ptm 	in assumed to be in utc time. Will be
   *							different upon completion of fnct
   */
-int change_timezone(struct tm * ptm, int utc_offset) {
+int time_correct(struct tm * ptm, int utc_offset) {
 	ptm->tm_year = ptm->tm_year;
 	ptm->tm_mon = ptm->tm_mon;
 	ptm->tm_mday;
@@ -326,4 +376,20 @@ string seconds_to_datetime(struct tm * ptm) {
 
 	
 	return strtm_y + "-" + strtm_mo + "-" + strtm_d + " " + strtm_h + ":" + strtm_mn + ":" + strtm_s;
+}
+
+string zellersAlgorithm(int day, int month, int year){
+	string weekday[7] = {"Saturday","Sunday","Monday","Tuesday", "Wednesday","Thursday","Friday"};
+	
+	int mon;
+	if(month > 2)
+		mon = month; //for march to december month code is same as month
+	else {
+		mon = (12+month); //for Jan and Feb, month code will be 13 and 14 year--; //decrease year for month Jan and Feb
+	}
+	int y = year % 100; //last two digit
+	int c = year / 100; //first two digit
+	int w = (day + floor((13*(mon+1))/5) + y + floor(y/4) + floor(c/4) + (5*c));
+	w = w % 7;
+	return weekday[w];
 }
