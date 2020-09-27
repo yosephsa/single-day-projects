@@ -13,52 +13,34 @@ import codecs
 
 BASE_DIR = os.path.abspath("")
 CSV_COLUMNS = ["id", "content", "isSpam"]
-lastIndex = 0
 
 def main():
+	global lastIndex
 	dirData = os.path.join(BASE_DIR, "datasets")
-	# Select datasets
-	dirSpam1 = os.path.join(dirData, "raw", "enron1", "spam")
-	dirHam1 = os.path.join(dirData, "raw", "enron1", "ham")
-
-	dirSpam2 = os.path.join(dirData, "raw", "enron2", "spam")
-	dirHam2 = os.path.join(dirData, "raw", "enron2", "ham")
-
-	dirSpam3 = os.path.join(dirData, "raw", "enron3", "spam")
-	dirHam3 = os.path.join(dirData, "raw", "enron3", "ham")
-
-	dirSpam4 = os.path.join(dirData, "raw", "enron4", "spam")
-	dirHam4 = os.path.join(dirData, "raw", "enron4", "ham")
-
-	dirSpam5 = os.path.join(dirData, "raw", "enron5", "spam")
-	dirHam5 = os.path.join(dirData, "raw", "enron5", "ham")
-
-	dirSpam6 = os.path.join(dirData, "raw", "enron6", "spam")
-	dirHam6 = os.path.join(dirData, "raw", "enron6", "ham")
+	
+	# Select spam datasets
+	dirsTrain = []
+	for i in range(1, 7):
+		dirsTrain.append(os.path.join(dirData, "raw", "enron"+str(i), "spam"))
+		dirsTrain.append(os.path.join(dirData, "raw", "enron"+str(i), "ham"))
 
 	
 	# Select CSV files
 	fpTrain = os.path.join(dirData, "training.csv")
 
-	#Create train array and test array
-	dirTrainArr = [dirSpam1, dirHam1, dirSpam2, dirHam2, dirSpam3, dirHam3, dirSpam4, dirHam4, dirSpam5, dirHam5, dirSpam6, dirHam6]
-	#dirTrainArr = [dirSpam1]
-	dirTestArr = [dirSpam5, dirHam5, dirSpam6, dirHam6]
 
 	#create file and write first row (column names)
-	fTrain = open(fpTrain,"w+")
-	writeArrayTo(fTrain, CSV_COLUMNS)
+	processRawInto(dirsTrain, os.path.join(dirData, "training.csv"))
+	
+	
 
-	#Process given raw data into given file 
-	processRawInto(dirTrainArr, fTrain)
-
-	fTrain.close()
 	return
 
-def processRawInto(dirArr, file, min = None, max = None):
-	global lastIndex
-	lastIndex -= 1
+def processRawInto(dirArr, filePath, min = None, max = None):
+	file = open(filePath,"w+")
+	writeArrayTo(file, CSV_COLUMNS)
 
+	lastIndex = -1
 	#loop through given directory array and write file contents to csv
 	for directory in dirArr:
 		for eaFile in os.listdir(directory):
@@ -85,6 +67,7 @@ def processRawInto(dirArr, file, min = None, max = None):
 			#skip values above max is max is set
 			if(isinstance(max, int) and lastIndex >= max):
 				break
+	file.close()
 
 
 
