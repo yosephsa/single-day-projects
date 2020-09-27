@@ -15,7 +15,6 @@ BASE_DIR = os.path.abspath("")
 CSV_COLUMNS = ["id", "content", "isSpam"]
 
 def main():
-	global lastIndex
 	dirData = os.path.join(BASE_DIR, "datasets")
 	
 	# Select spam datasets
