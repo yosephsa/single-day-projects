@@ -27,7 +27,8 @@ def getAudioAndSave(text, urlName):
     # initialize tts, create mp3 and play
     tts = gTTS(s, 'com')
     tts.save(file)
-    os.system("mpg123 " + file)
+    #os.system("mpg123 " + file)
+    print("Text to Speech saved to " + file)
 
 
 ##################
